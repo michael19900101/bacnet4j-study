@@ -13,8 +13,10 @@ import com.serotonin.bacnet4j.type.Encodable;
 import com.serotonin.bacnet4j.type.constructed.ReadAccessResult;
 import com.serotonin.bacnet4j.type.constructed.ReadAccessSpecification;
 import com.serotonin.bacnet4j.type.constructed.SequenceOf;
+import com.serotonin.bacnet4j.type.constructed.StatusFlags;
 import com.serotonin.bacnet4j.type.enumerated.ObjectType;
 import com.serotonin.bacnet4j.type.enumerated.PropertyIdentifier;
+import com.serotonin.bacnet4j.type.primitive.Boolean;
 import com.serotonin.bacnet4j.type.primitive.ObjectIdentifier;
 import com.serotonin.bacnet4j.type.primitive.UnsignedInteger;
 import java.util.ArrayList;
@@ -28,11 +30,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import org.code_house.bacnet4j.wrapper.api.util.ForwardingAdapter;
 import org.code_house.bacnet4j.wrapper.device.DefaultDeviceFactory;
 import org.code_house.bacnet4j.wrapper.device.DeviceFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import test.BACnetHandler;
 
 public abstract class BacNetClientBase implements BacNetClient {
 
@@ -426,6 +432,55 @@ public abstract class BacNetClientBase implements BacNetClient {
         } catch (BACnetException e) {
             logger.trace("Failed to retrieve property {} for device {} object {}", identifier, device, object, e);
             return null;
+        }
+    }
+
+    public String readProperty(Device device, ObjectIdentifier object, PropertyIdentifier identifier) {
+        ObjectIdentifier id = new ObjectIdentifier(object.getObjectType(), object.getInstanceNumber());
+        try {
+            ReadPropertyAck presentValue = localDevice.send(device.getBacNet4jAddress(),
+                    new ReadPropertyRequest(id, identifier)
+            ).get();
+            Encodable propertyValue = presentValue.getValue();
+            String result;
+            if (propertyValue instanceof StatusFlags) {
+                boolean[] booleanArray = ((StatusFlags) propertyValue).getValue();
+                result = IntStream.range(0, booleanArray.length)
+                        .mapToObj(i -> booleanArray[i] ? "1" : "0")
+                        .collect(Collectors.joining());
+            }  else if (propertyValue instanceof Boolean) {
+                result = ((Boolean) propertyValue).booleanValue() ? "1" : "0";
+            }  else {
+                result = propertyValue.toString();
+            }
+            return result;
+        } catch (BACnetException e) {
+            logger.trace("Failed to retrieve property {} for device {} object {}", identifier, device, object, e);
+        }
+        return "";
+    }
+
+    public void getAllObjectNames(Device device) {
+        try {
+            ReadPropertyAck ack = localDevice.send(device.getBacNet4jAddress(),
+                    new ReadPropertyRequest(device.getObjectIdentifier(), PropertyIdentifier.objectList)
+            ).get();
+            SequenceOf<ObjectIdentifier> value = ack.getValue();
+            logger.debug("Received list of BACnet objects. Size {}, values {}", value.getCount(), value);
+            for (ObjectIdentifier id : value) {
+                logger.trace("Creating property from object identifier {}", id);
+                try {
+                    if (!ObjectType.device.equals(id.getObjectType())) {
+                        Encodable objectName = readOrNull(device, id, PropertyIdentifier.objectName);
+                        String type = BACnetHandler.getObjectName(id.getObjectType().intValue());
+                        System.out.println("objectName:"+objectName+" id:"+id.getInstanceNumber()+" type:"+type);
+                    }
+                } catch (Exception e) {
+                    logger.warn("Discovered unsupported property, ignoring", e);
+                }
+            }
+        } catch (BACnetException e) {
+            throw new BacNetClientException("Unable to get device properties", e);
         }
     }
 
